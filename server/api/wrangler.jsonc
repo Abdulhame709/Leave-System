@@ -1,0 +1,7 @@
+{
+  // A development-only Worker; deployment is not automated or configured.
+  "name": "leave-system-api-dev",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-10-01",
+  "workers_dev": true
+}

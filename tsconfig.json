@@ -9,5 +9,5 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["apps/web/src", "packages/authorization/src"]
+  "include": ["apps/web/src", "packages/authorization/src", "server/api/src"]
 }
