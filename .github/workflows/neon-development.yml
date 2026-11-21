@@ -1,0 +1,100 @@
+name: Neon development database (manual)
+
+# Available for manual dispatch only once the workflow is present on the default
+# branch. Dispatch the reviewed development branch; never use production.
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: 'check = connection only; migrate_and_test = create schema and test'
+        type: choice
+        options:
+          - check
+          - migrate_and_test
+        default: check
+        required: true
+      confirmation:
+        description: 'For migrate_and_test type DEV_ONLY'
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  development-database:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out reviewed code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Validate target and run selected operation
+        shell: bash
+        env:
+          PGDATABASE: ${{ secrets.NEON_DEV_DATABASE_URL }}
+          OPERATION: ${{ inputs.operation }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+          PGCONNECT_TIMEOUT: '15'
+        run: |
+          set -euo pipefail
+          # Never echo the URL or SQL diagnostics, which could contain sensitive information.
+          if [[ -z "${PGDATABASE:-}" ]]; then
+            echo 'Missing NEON_DEV_DATABASE_URL secret.' >&2
+            exit 1
+          fi
+          if ! python3 - <<'PY'
+          import os
+          from urllib.parse import parse_qs, urlparse
+          u = urlparse(os.environ['PGDATABASE'])
+          ssl = parse_qs(u.query).get('sslmode', [])
+          if (u.scheme not in ('postgres', 'postgresql') or not u.hostname
+              or not u.hostname.lower().endswith('.neon.tech')
+              or ssl not in (['require'], ['verify-full'])):
+              raise SystemExit(1)
+          PY
+          then
+            echo 'The connection must be a Neon PostgreSQL URL with sslmode=require or verify-full.' >&2
+            exit 1
+          fi
+          if ! command -v psql >/dev/null; then
+            echo 'psql is not available on the runner.' >&2
+            exit 1
+          fi
+          if ! psql -X -q -v ON_ERROR_STOP=1 -c 'SELECT 1' >/dev/null 2>&1; then
+            echo 'Connection failed. Verify the development secret and database availability.' >&2
+            exit 1
+          fi
+          echo 'Neon connection succeeded.'
+          if [[ "$OPERATION" == 'check' ]]; then
+            exit 0
+          fi
+          if [[ "$OPERATION" != 'migrate_and_test' || "$CONFIRMATION" != 'DEV_ONLY' ]]; then
+            echo 'For a migration, select migrate_and_test and confirm DEV_ONLY.' >&2
+            exit 1
+          fi
+          # Stop rather than alter or overwrite an existing schema on repeat runs.
+          if ! schema_exists=$(psql -X -A -t -q -v ON_ERROR_STOP=1 -c "SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'leave_app')" 2>/dev/null); then
+            echo 'Could not inspect the target database.' >&2
+            exit 1
+          fi
+          if [[ "$schema_exists" != 'f' ]]; then
+            echo 'The leave_app schema already exists. Stopping without changes.' >&2
+            exit 1
+          fi
+          # The isolation script requires CREATE ROLE and a free test role name.
+          if ! psql -X -q -v ON_ERROR_STOP=1 -c 'BEGIN; CREATE ROLE leave_rls_test NOLOGIN NOSUPERUSER NOBYPASSRLS; ROLLBACK;' >/dev/null 2>&1; then
+            echo 'Test-role preflight failed; no schema changes were made.' >&2
+            exit 1
+          fi
+          if ! psql -X -q -v ON_ERROR_STOP=1 -f db/migrations/001_organization_foundation.sql >/dev/null 2>&1; then
+            echo 'Migration failed; inspect the development database before retrying.' >&2
+            exit 1
+          fi
+          echo 'Development schema created.'
+          if ! psql -X -q -v ON_ERROR_STOP=1 -f db/tests/001_tenant_isolation.sql >/dev/null 2>&1; then
+            echo 'Isolation test failed. The created schema remains; review it before retrying.' >&2
+            exit 1
+          fi
+          echo 'Partial tenant isolation tests passed.'
