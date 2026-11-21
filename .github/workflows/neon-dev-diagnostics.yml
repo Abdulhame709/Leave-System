@@ -1,0 +1,42 @@
+name: Diagnose Neon development setup
+on:
+  push:
+    branches:
+      - arena/5a930501-leave-system
+    paths:
+      - .github/workflows/neon-dev-diagnostics.yml
+permissions: {}
+jobs:
+  schema-present:
+    name: Check whether development schema exists
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Schema exists
+        env:
+          PGDATABASE: ${{ secrets.NEON_DEV_DATABASE_URL }}
+          PGCONNECT_TIMEOUT: '15'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${PGDATABASE:-}" ]]; then exit 1; fi
+          exists=$(psql -X -d "$PGDATABASE" -A -t -q -v ON_ERROR_STOP=1 -c "SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'leave_app')" 2>/dev/null) || exit 1
+          if [[ "$exists" == 't' ]]; then echo 'Development schema exists.'; else echo 'Development schema is absent.'; exit 1; fi
+  can-create-test-role:
+    name: Check temporary test role permission
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Test role preflight
+        env:
+          PGDATABASE: ${{ secrets.NEON_DEV_DATABASE_URL }}
+          PGCONNECT_TIMEOUT: '15'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${PGDATABASE:-}" ]]; then exit 1; fi
+          if ! psql -X -d "$PGDATABASE" -q -v ON_ERROR_STOP=1 -c 'BEGIN; CREATE ROLE leave_rls_test NOLOGIN NOSUPERUSER NOBYPASSRLS; ROLLBACK;' >/dev/null 2>&1; then
+            echo 'Temporary role preflight did not succeed.' >&2
+            exit 1
+          fi
+          echo 'Temporary role preflight succeeded; creation rolled back.'
