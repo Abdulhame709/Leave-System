@@ -62,7 +62,7 @@ jobs:
             echo 'psql is not available on the runner.' >&2
             exit 1
           fi
-          if ! psql -X -q -v ON_ERROR_STOP=1 -c 'SELECT 1' >/dev/null 2>&1; then
+          if ! psql -X -d "$PGDATABASE" -q -v ON_ERROR_STOP=1 -c 'SELECT 1' >/dev/null 2>&1; then
             echo 'Connection failed. Verify the development secret and database availability.' >&2
             exit 1
           fi
@@ -75,7 +75,7 @@ jobs:
             exit 1
           fi
           # Stop rather than alter or overwrite an existing schema on repeat runs.
-          if ! schema_exists=$(psql -X -A -t -q -v ON_ERROR_STOP=1 -c "SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'leave_app')" 2>/dev/null); then
+          if ! schema_exists=$(psql -X -d "$PGDATABASE" -A -t -q -v ON_ERROR_STOP=1 -c "SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'leave_app')" 2>/dev/null); then
             echo 'Could not inspect the target database.' >&2
             exit 1
           fi
@@ -84,16 +84,16 @@ jobs:
             exit 1
           fi
           # The isolation script requires CREATE ROLE and a free test role name.
-          if ! psql -X -q -v ON_ERROR_STOP=1 -c 'BEGIN; CREATE ROLE leave_rls_test NOLOGIN NOSUPERUSER NOBYPASSRLS; ROLLBACK;' >/dev/null 2>&1; then
+          if ! psql -X -d "$PGDATABASE" -q -v ON_ERROR_STOP=1 -c 'BEGIN; CREATE ROLE leave_rls_test NOLOGIN NOSUPERUSER NOBYPASSRLS; ROLLBACK;' >/dev/null 2>&1; then
             echo 'Test-role preflight failed; no schema changes were made.' >&2
             exit 1
           fi
-          if ! psql -X -q -v ON_ERROR_STOP=1 -f db/migrations/001_organization_foundation.sql >/dev/null 2>&1; then
+          if ! psql -X -d "$PGDATABASE" -q -v ON_ERROR_STOP=1 -f db/migrations/001_organization_foundation.sql >/dev/null 2>&1; then
             echo 'Migration failed; inspect the development database before retrying.' >&2
             exit 1
           fi
           echo 'Development schema created.'
-          if ! psql -X -q -v ON_ERROR_STOP=1 -f db/tests/001_tenant_isolation.sql >/dev/null 2>&1; then
+          if ! psql -X -d "$PGDATABASE" -q -v ON_ERROR_STOP=1 -f db/tests/001_tenant_isolation.sql >/dev/null 2>&1; then
             echo 'Isolation test failed. The created schema remains; review it before retrying.' >&2
             exit 1
           fi

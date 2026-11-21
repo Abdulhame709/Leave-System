@@ -46,7 +46,7 @@ jobs:
             echo 'PostgreSQL client is unavailable on the runner.' >&2
             exit 1
           fi
-          if ! psql -X -q -v ON_ERROR_STOP=1 -c 'SELECT 1' >/dev/null 2>&1; then
+          if ! psql -X -d "$PGDATABASE" -q -v ON_ERROR_STOP=1 -c 'SELECT 1' >/dev/null 2>&1; then
             echo 'Connection failed. Verify the development URL and database availability privately.' >&2
             exit 1
           fi
