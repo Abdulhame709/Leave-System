@@ -5,7 +5,8 @@ on:
       - arena/5a930501-leave-system
     paths:
       - .github/workflows/neon-dev-diagnostics.yml
-permissions: {}
+permissions:
+  contents: read
 jobs:
   schema-present:
     name: Check whether development schema exists
