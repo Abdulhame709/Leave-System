@@ -3,6 +3,9 @@
 -- below solely to exercise RLS; NEVER apply these grants to the real application.
 BEGIN;
 CREATE ROLE leave_rls_test NOLOGIN NOSUPERUSER NOBYPASSRLS;
+-- PostgreSQL 16+ does not necessarily grant SET ROLE to the creator.
+-- This temporary grant and the role are both rolled back with the test.
+GRANT leave_rls_test TO CURRENT_USER WITH SET TRUE;
 GRANT USAGE ON SCHEMA leave_app TO leave_rls_test;
 GRANT EXECUTE ON FUNCTION leave_app.current_organization_id() TO leave_rls_test;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA leave_app TO leave_rls_test;
