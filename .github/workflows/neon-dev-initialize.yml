@@ -1,0 +1,76 @@
+name: Initialize Neon development schema
+
+# One-time developer-approved action on the current work branch only.
+# Never target production. A repeat run refuses an existing leave_app schema.
+on:
+  push:
+    branches:
+      - arena/5a930501-leave-system
+    paths:
+      - .github/workflows/neon-dev-initialize.yml
+
+permissions:
+  contents: read
+
+jobs:
+  initialize-development:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Initialize empty development schema and test isolation
+        shell: bash
+        env:
+          PGDATABASE: ${{ secrets.NEON_DEV_DATABASE_URL }}
+          PGCONNECT_TIMEOUT: '15'
+        run: |
+          set -euo pipefail
+          # The secret and database diagnostics are never printed.
+          if [[ -z "${PGDATABASE:-}" ]]; then
+            echo 'Development database secret is unavailable.' >&2
+            exit 1
+          fi
+          if ! python3 - <<'PY' 2>/dev/null
+          import os
+          from urllib.parse import parse_qs, urlparse
+          u = urlparse(os.environ['PGDATABASE'])
+          ssl = parse_qs(u.query).get('sslmode', [])
+          if (u.scheme not in ('postgres', 'postgresql') or not u.hostname
+              or not u.hostname.lower().endswith('.neon.tech')
+              or ssl not in (['require'], ['verify-full'])):
+              raise SystemExit(1)
+          PY
+          then
+            echo 'Invalid development Neon connection URL or TLS setting.' >&2
+            exit 1
+          fi
+          if ! command -v psql >/dev/null; then
+            echo 'PostgreSQL client is unavailable on the runner.' >&2
+            exit 1
+          fi
+          if ! schema_exists=$(psql -X -d "$PGDATABASE" -A -t -q -v ON_ERROR_STOP=1 -c "SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'leave_app')" 2>/dev/null); then
+            echo 'Could not inspect the development database. No schema changes were made.' >&2
+            exit 1
+          fi
+          if [[ "$schema_exists" != 'f' ]]; then
+            echo 'The leave_app schema already exists; no schema changes were made.' >&2
+            exit 1
+          fi
+          # Test requires a temporary role; fail before migration if unavailable.
+          if ! psql -X -d "$PGDATABASE" -q -v ON_ERROR_STOP=1 -c 'BEGIN; CREATE ROLE leave_rls_test NOLOGIN NOSUPERUSER NOBYPASSRLS; ROLLBACK;' >/dev/null 2>&1; then
+            echo 'Test-role preflight failed; no schema changes were made.' >&2
+            exit 1
+          fi
+          if ! psql -X -d "$PGDATABASE" -q -v ON_ERROR_STOP=1 -f db/migrations/001_organization_foundation.sql >/dev/null 2>&1; then
+            echo 'Migration failed; inspect the development database before retrying.' >&2
+            exit 1
+          fi
+          echo 'Development schema created.'
+          if ! psql -X -d "$PGDATABASE" -q -v ON_ERROR_STOP=1 -f db/tests/001_tenant_isolation.sql >/dev/null 2>&1; then
+            echo 'Isolation test failed; the created schema remains. Review before retrying.' >&2
+            exit 1
+          fi
+          echo 'Partial tenant isolation test passed. Test fixtures were rolled back.'
