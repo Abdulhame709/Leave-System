@@ -17,7 +17,7 @@ test('the health endpoint does not accept writes', async () => {
   assert.equal(response.headers.get('allow'), 'GET');
 });
 test('other routes expose no business or login endpoint', async () => {
-  for (const path of ['/api/v1/employees', '/api/v1/login', '/api/v1/health/extra', '/']) {
+  for (const path of ['/api/v1/employees', '/api/v1/login', '/api/auth/sign-up/email', '/api/auth/admin/create-user', '/api/auth/admin/set-user-password', '/api/v1/health/extra', '/']) {
     const response = await handleRequest(new Request(`https://example.test${path}`));
     assert.equal(response.status, 404);
     assert.deepEqual(await response.json(), { error: 'not_found' });
