@@ -1,0 +1,53 @@
+name: Neon development connection check
+
+# Only runs for changes to this file on the reviewed work branch. Never applies
+# migrations, and never needs a checkout or access to repository files.
+on:
+  push:
+    branches:
+      - arena/5a930501-leave-system
+    paths:
+      - .github/workflows/neon-branch-check.yml
+
+permissions: {}
+
+jobs:
+  connection-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check Neon connection without changing the database
+        shell: bash
+        env:
+          PGDATABASE: ${{ secrets.NEON_DEV_DATABASE_URL }}
+          PGCONNECT_TIMEOUT: '15'
+        run: |
+          set -euo pipefail
+          if [[ -z "${PGDATABASE:-}" ]]; then
+            echo 'Development database secret is not available to this workflow.' >&2
+            exit 1
+          fi
+          # No diagnostics or URL values are printed: the URL contains a password.
+          if ! python3 - <<'PY' 2>/dev/null
+          import os
+          from urllib.parse import parse_qs, urlparse
+          u = urlparse(os.environ['PGDATABASE'])
+          ssl = parse_qs(u.query).get('sslmode', [])
+          if (u.scheme not in ('postgres', 'postgresql') or not u.hostname
+              or not u.hostname.lower().endswith('.neon.tech')
+              or ssl not in (['require'], ['verify-full'])):
+              raise SystemExit(1)
+          PY
+          then
+            echo 'The secret must be a Neon PostgreSQL URL with sslmode=require or verify-full.' >&2
+            exit 1
+          fi
+          if ! command -v psql >/dev/null; then
+            echo 'PostgreSQL client is unavailable on the runner.' >&2
+            exit 1
+          fi
+          if ! psql -X -d "$PGDATABASE" -q -v ON_ERROR_STOP=1 -c 'SELECT 1' >/dev/null 2>&1; then
+            echo 'Connection failed. Verify the development URL and database availability privately.' >&2
+            exit 1
+          fi
+          echo 'Connection to Neon succeeded. No schema changes were made.'

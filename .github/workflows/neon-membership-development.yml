@@ -1,0 +1,77 @@
+name: Apply development membership read policies
+
+# Approved development-only update. No automatic production access or auth.
+on:
+  push:
+    branches:
+      - arena/5a930501-leave-system
+    paths:
+      - .github/workflows/neon-membership-development.yml
+permissions:
+  contents: read
+jobs:
+  development-membership:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Check expected development baseline
+        shell: bash
+        env:
+          PGDATABASE: ${{ secrets.NEON_DEV_DATABASE_URL }}
+          PGCONNECT_TIMEOUT: '15'
+        run: |
+          set -euo pipefail
+          if [[ -z "${PGDATABASE:-}" ]]; then echo 'Development secret is missing.' >&2; exit 1; fi
+          if ! python3 - <<'PY' 2>/dev/null
+          import os
+          from urllib.parse import parse_qs, urlparse
+          u = urlparse(os.environ['PGDATABASE'])
+          if (u.scheme not in ('postgres','postgresql') or not u.hostname
+              or not u.hostname.lower().endswith('.neon.tech')
+              or parse_qs(u.query).get('sslmode', []) not in (['require'], ['verify-full'])):
+              raise SystemExit(1)
+          PY
+          then echo 'Development connection URL or TLS setting is invalid.' >&2; exit 1; fi
+          query="SELECT to_regclass('leave_app.employees') IS NOT NULL AND to_regclass('leave_app.organization_memberships') IS NULL AND (SELECT count(*) FROM pg_policies WHERE schemaname='leave_app' AND policyname IN ('tenant_organizations','tenant_branches','tenant_departments','tenant_employees')) = 4"
+          if ! ok=$(psql -X -d "$PGDATABASE" -A -t -q -v ON_ERROR_STOP=1 -c "$query" 2>/dev/null); then
+            echo 'Could not inspect the baseline; nothing applied.' >&2; exit 1
+          fi
+          if [[ "$ok" != 't' ]]; then echo 'Unexpected baseline; nothing applied.' >&2; exit 1; fi
+          echo 'Expected initial schema found.'
+      - name: Check temporary test-role privileges
+        shell: bash
+        env:
+          PGDATABASE: ${{ secrets.NEON_DEV_DATABASE_URL }}
+          PGCONNECT_TIMEOUT: '15'
+        run: |
+          set -euo pipefail
+          if ! psql -X -d "$PGDATABASE" -q -v ON_ERROR_STOP=1 -c 'BEGIN; CREATE ROLE leave_member_test NOLOGIN NOSUPERUSER NOBYPASSRLS; GRANT leave_member_test TO CURRENT_USER WITH SET TRUE; SET LOCAL ROLE leave_member_test; ROLLBACK;' >/dev/null 2>&1; then
+            echo 'Temporary test-role preflight failed; no migration applied.' >&2; exit 1
+          fi
+          echo 'Temporary test-role check succeeded and was rolled back.'
+      - name: Apply membership read policies
+        shell: bash
+        env:
+          PGDATABASE: ${{ secrets.NEON_DEV_DATABASE_URL }}
+          PGCONNECT_TIMEOUT: '15'
+        run: |
+          set -euo pipefail
+          if ! psql -X -d "$PGDATABASE" -q -v ON_ERROR_STOP=1 -f db/migrations/002_membership_read_policies.sql >/dev/null 2>&1; then
+            echo 'Migration failed. Inspect development database before retrying.' >&2; exit 1
+          fi
+          echo 'Membership read policy migration applied.'
+      - name: Test membership and role isolation
+        shell: bash
+        env:
+          PGDATABASE: ${{ secrets.NEON_DEV_DATABASE_URL }}
+          PGCONNECT_TIMEOUT: '15'
+        run: |
+          set -euo pipefail
+          if ! psql -X -d "$PGDATABASE" -q -v ON_ERROR_STOP=1 -f db/tests/002_membership_read_policies.sql >/dev/null 2>&1; then
+            echo 'Isolation test failed; migration remains. Review before retrying.' >&2; exit 1
+          fi
+          echo 'Read isolation tests passed; all test data and test-role grants were rolled back.'

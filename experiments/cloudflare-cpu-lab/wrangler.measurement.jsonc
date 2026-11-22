@@ -1,0 +1,11 @@
+{
+  // NEVER run deploy until a protected route and Access policy are configured.
+  // No route is defined, workers.dev and previews are disabled. No secret here.
+  "name": "leave-auth-cpu-lab",
+  "main": "worker.mjs",
+  "compatibility_date": "2025-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": { "enabled": true, "traces": { "enabled": true, "head_sampling_rate": 1 } }
+}

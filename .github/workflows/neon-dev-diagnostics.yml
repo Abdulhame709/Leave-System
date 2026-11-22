@@ -1,0 +1,100 @@
+name: Diagnose Neon development setup
+on:
+  push:
+    branches:
+      - arena/5a930501-leave-system
+    paths:
+      - .github/workflows/neon-dev-diagnostics.yml
+permissions:
+  contents: read
+jobs:
+  schema-present:
+    name: Check whether development schema exists
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Schema exists
+        env:
+          PGDATABASE: ${{ secrets.NEON_DEV_DATABASE_URL }}
+          PGCONNECT_TIMEOUT: '15'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${PGDATABASE:-}" ]]; then exit 1; fi
+          exists=$(psql -X -d "$PGDATABASE" -A -t -q -v ON_ERROR_STOP=1 -c "SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'leave_app')" 2>/dev/null) || exit 1
+          if [[ "$exists" == 't' ]]; then echo 'Development schema exists.'; else echo 'Development schema is absent.'; exit 1; fi
+  can-create-test-role:
+    name: Check temporary test role permission
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Test role preflight
+        env:
+          PGDATABASE: ${{ secrets.NEON_DEV_DATABASE_URL }}
+          PGCONNECT_TIMEOUT: '15'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${PGDATABASE:-}" ]]; then exit 1; fi
+          if ! psql -X -d "$PGDATABASE" -q -v ON_ERROR_STOP=1 -c 'BEGIN; CREATE ROLE leave_rls_test NOLOGIN NOSUPERUSER NOBYPASSRLS; GRANT leave_rls_test TO CURRENT_USER WITH SET TRUE; SET LOCAL ROLE leave_rls_test; ROLLBACK;' >/dev/null 2>&1; then
+            echo 'Temporary role preflight did not succeed.' >&2
+            exit 1
+          fi
+          echo 'Temporary role preflight succeeded; creation rolled back.'
+  isolate-test-diagnosis:
+    name: Diagnose isolated tenant tests
+    needs: [schema-present, can-create-test-role]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Run and classify test without printing database errors
+        id: classify
+        env:
+          PGDATABASE: ${{ secrets.NEON_DEV_DATABASE_URL }}
+          PGCONNECT_TIMEOUT: '15'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${PGDATABASE:-}" ]]; then exit 1; fi
+          if err=$(psql -X -d "$PGDATABASE" -q -v ON_ERROR_STOP=1 -f db/tests/001_tenant_isolation.sql 2>&1 >/dev/null); then
+            category=passed
+          else
+            case "${err,,}" in
+              *'permission denied to set role'*|*'must be member of role'*|*'permission to set role'*) category=set_role ;;
+              *'permission denied'*) category=permission ;;
+              *'already exists'*|*'duplicate key'*) category=duplicate ;;
+              *'tenant a isolation failed'*|*'tenant b isolation failed'*|*'visible'*|*'leaked'*|*'succeeded'*) category=isolation_assertion ;;
+              *'row-level security'*|*'row level security'*) category=rls ;;
+              *'foreign key'*) category=foreign_key ;;
+              *) category=other ;;
+            esac
+          fi
+          echo "category=$category" >> "$GITHUB_OUTPUT"
+      - name: Tests passed
+        if: steps.classify.outputs.category == 'passed'
+        run: echo 'Partial isolation tests passed.'
+      - name: Role switching permission issue
+        if: steps.classify.outputs.category == 'set_role'
+        run: exit 1
+      - name: General permission issue
+        if: steps.classify.outputs.category == 'permission'
+        run: exit 1
+      - name: Duplicate fixture or role
+        if: steps.classify.outputs.category == 'duplicate'
+        run: exit 1
+      - name: Isolation assertion failed
+        if: steps.classify.outputs.category == 'isolation_assertion'
+        run: exit 1
+      - name: Row security policy error
+        if: steps.classify.outputs.category == 'rls'
+        run: exit 1
+      - name: Foreign key error
+        if: steps.classify.outputs.category == 'foreign_key'
+        run: exit 1
+      - name: Unclassified test error
+        if: steps.classify.outputs.category == 'other'
+        run: exit 1
